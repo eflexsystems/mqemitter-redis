@@ -7,6 +7,7 @@ var inherits = require('inherits')
 var LRU = require('lru-cache')
 var msgpack = require('msgpack-lite')
 var EE = require('events').EventEmitter
+var Pipeline = require('ioredis-auto-pipeline')
 
 function MQEmitterRedis (opts) {
   if (!(this instanceof MQEmitterRedis)) {
@@ -14,14 +15,17 @@ function MQEmitterRedis (opts) {
   }
 
   opts = opts || {}
+
   this._opts = opts
 
   this.subConn = opts.subConn ? opts.subConn : new Redis(opts)
   this.pubConn = opts.pubConn ? opts.pubConn : new Redis(opts)
 
+  this._pipeline = Pipeline(this.pubConn)
+
   this._topics = {}
 
-  this._cache = LRU({
+  this._cache = new LRU({
     max: 10000,
     maxAge: 60 * 1000 // one minute
   })
@@ -29,6 +33,14 @@ function MQEmitterRedis (opts) {
   this.state = new EE()
 
   var that = this
+
+  function onError (err) {
+    if (err && !that.closing) {
+      that.state.emit('error', err)
+    }
+  }
+
+  this._onError = onError
 
   function handler (sub, topic, payload) {
     var packet = msgpack.decode(payload)
@@ -51,7 +63,7 @@ function MQEmitterRedis (opts) {
   })
 
   this.subConn.on('error', function (err) {
-    that.state.emit('error', err)
+    that._onError(err)
   })
 
   this.pubConn.on('connect', function () {
@@ -59,7 +71,7 @@ function MQEmitterRedis (opts) {
   })
 
   this.pubConn.on('error', function (err) {
-    that.state.emit('error', err)
+    that._onError(err)
   })
 
   MQEmitter.call(this, opts)
@@ -74,6 +86,14 @@ inherits(MQEmitterRedis, MQEmitter)
 })
 
 MQEmitterRedis.prototype.close = function (cb) {
+  cb = cb || noop
+
+  if (this.closed || this.closing) {
+    return cb()
+  }
+
+  this.closing = true
+
   var count = 2
   var that = this
 
@@ -126,8 +146,11 @@ MQEmitterRedis.prototype.on = function on (topic, cb, done) {
 }
 
 MQEmitterRedis.prototype.emit = function (msg, done) {
+  done = done || this._onError
+
   if (this.closed) {
-    return done(new Error('mqemitter-redis is closed'))
+    var err = new Error('mqemitter-redis is closed')
+    return done(err)
   }
 
   var packet = {
@@ -135,10 +158,7 @@ MQEmitterRedis.prototype.emit = function (msg, done) {
     msg: msg
   }
 
-  this.pubConn.publish(msg.topic, msgpack.encode(packet))
-  if (done) {
-    setImmediate(done)
-  }
+  this._pipeline.publish(msg.topic, msgpack.encode(packet)).then(() => done()).catch(done)
 }
 
 MQEmitterRedis.prototype.removeListener = function (topic, cb, done) {
@@ -171,5 +191,7 @@ MQEmitterRedis.prototype._containsWildcard = function (topic) {
   return (topic.indexOf(this._opts.wildcardOne) >= 0) ||
          (topic.indexOf(this._opts.wildcardSome) >= 0)
 }
+
+function noop () {}
 
 module.exports = MQEmitterRedis

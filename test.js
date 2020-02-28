@@ -20,7 +20,8 @@ test('actual unsubscribe from Redis', function (t) {
 
   e.on('hello', noop)
   e.removeListener('hello', noop)
-  e.emit({ topic: 'hello' }, function () {
+  e.emit({ topic: 'hello' }, function (err) {
+    t.notOk(err)
     e.close(function () {
       t.end()
     })
@@ -53,7 +54,7 @@ test('ioredis connect event', function (t) {
 })
 
 test('ioredis error event', function (t) {
-  var e = redis({host: '127'})
+  var e = redis({ host: '127' })
 
   t.plan(1)
 
