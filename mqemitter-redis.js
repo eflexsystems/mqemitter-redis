@@ -44,6 +44,11 @@ function MQEmitterRedis (opts) {
 
   function handler (sub, topic, payload) {
     var packet = msgpack.decode(payload)
+
+    if (!packet.id) {
+      return
+    }
+
     if (!that._cache.get(packet.id)) {
       that._emit(packet.msg)
     }
